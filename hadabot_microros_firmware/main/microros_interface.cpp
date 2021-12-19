@@ -39,6 +39,7 @@ rcl_publisher_t encoder_publisher;
 rcl_subscription_t cmd_vel_subscriber;
 
 geometry_msgs__msg__Vector3 msg;
+geometry_msgs__msg__Twist twist_msg;
 
 long encoder(int encoder_dir){                                            // Function to read and display velue of encoder 2 as a long
   Wire.beginTransmission(MD25ADDRESS);           
@@ -89,6 +90,62 @@ void encoder_callback(rcl_timer_t * timer, int64_t last_call_time)
 	}
 }
 
+/*
+void kobuki_set_speed_command(float translation, float rotation){
+    pthread_mutex_lock(&robot_lock);
+    robot.base_control_command[0] = KOBUKI_BASE_CONTROL_COMMAND;
+    robot.base_control_command[1] = KOBUKI_BASE_CONTROL_COMMAND_LEN;
+
+    int16_t * speed = (int16_t *) &robot.base_control_command[2];
+    int16_t * radius = (int16_t *) &robot.base_control_command[4];
+    
+    // kobuki_safety_contrains(&translation, &rotation);
+    
+    // convert to mm;
+    translation *= 1000;
+    float b2 = KOBUKI_WHEELBASE * 500.0;
+
+    if (fabs(translation) < 1){
+        //Pure rotation
+        *radius = 1;
+        *speed =  (int16_t) (rotation * b2);
+    } else if (fabs(rotation) < 1e-3 ) {
+        //Pure translation
+        *speed = (int16_t) translation;
+        *radius = 0;
+    }else {
+        //Translation and rotation
+        float r = translation/rotation;
+        *radius = (int16_t) r;
+        if (r > 1) {
+            *speed = (int16_t) (translation * (r + b2)/ r);
+        } else if (r < -1) {
+            *speed = (int16_t) (translation * (r - b2)/ r);
+        }
+    }
+
+    #if (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)
+        *speed = *((int16_t *)  kobuki_swap_endianness(speed, 16)));
+        *radius = *((int16_t *) kobuki_swap_endianness(radius, 16)));
+    #endif
+    pthread_mutex_unlock(&robot_lock);
+
+#ifdef KOBUKI_DEBUG
+    printf("Setting base control to : translation = %0.3f, rotation = %0.3f speed = %d radius = %d\n Hex: ",translation, rotation, *speed, *radius);
+    for (size_t i = 0; i < sizeof(robot.base_control_command); i++){ printf("0x%02X ", robot.base_control_command[i]);}
+    printf("\n");
+#endif
+}
+
+*/
+
+void cmd_vel_callback(const void * msgin)
+{
+	const geometry_msgs__msg__Twist * msg = (geometry_msgs__msg__Twist *) msgin;
+	printf("I have heard: \"%f\"\n", msg->linear.x);
+  // kobuki_set_speed_command -- https://github.com/pablogs9/kobuki_espidf_component/blob/d0694edbaab91a60d2bec6b438b9971065b1893c/src/kobuki.c
+}
+
 void appMain(void * arg)
 {
 	Wire.begin();
@@ -134,9 +191,15 @@ void appMain(void * arg)
 		encoder_callback));
 
 	// create executor
-	rclc_executor_t executor;
-	RCCHECK(rclc_executor_init(&executor, &support.context, 1, &allocator));
+	rclc_executor_t executor = rclc_executor_get_zero_initialized_executor();
+  RCCHECK(rclc_executor_init(&executor, &support.context, 2, &allocator));
 	RCCHECK(rclc_executor_add_timer(&executor, &timer));
+  RCCHECK(rclc_executor_add_subscription( 
+    &executor,
+    &cmd_vel_subscriber,
+    &twist_msg, 
+    cmd_vel_callback,
+    ON_NEW_DATA));
 
 	msg.x = 0.0;
 	msg.y = 0.0;
@@ -148,6 +211,7 @@ void appMain(void * arg)
 	}
 
 	// free resources
+  RCCHECK(rcl_subscription_fini(&cmd_vel_subscriber, &node))
 	RCCHECK(rcl_publisher_fini(&encoder_publisher, &node))
 	RCCHECK(rcl_node_fini(&node))
 
