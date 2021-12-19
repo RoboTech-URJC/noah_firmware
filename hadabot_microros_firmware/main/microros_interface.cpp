@@ -5,18 +5,11 @@
 #include <rcl/error_handling.h>
 #include <rclc/rclc.h>
 #include <rclc/executor.h>
-#include <std_msgs/msg/header.h>
-#include <std_msgs/msg/string.h>
-#include <std_msgs/msg/float32.h>
-#include <sensor_msgs/msg/temperature.h>
-#include <nav_msgs/msg/odometry.h>
 #include <geometry_msgs/msg/twist.h>
-#include <geometry_msgs/msg/pose2_d.h>
-#include <hadabot_msgs/msg/odom2_d.h>
+#include <geometry_msgs/msg/vector3.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <time.h>
-#include "Geometry.h"
 
 #ifdef ESP_PLATFORM
 #include "freertos/FreeRTOS.h"
@@ -24,293 +17,145 @@
 #include "freertos/queue.h"
 #endif
 
+#include "Wire.h"
+
+#define CMD                 16                        // Values of 0 eing sent using write have to be cast as a byte to stop them being misinterperted as NULL
+                                                        // This is a but with arduino 1
+#define MD25ADDRESS         88                        // Address of the MD25
+#define SOFTWAREREG         13                        // Byte to read the software version
+#define SPEED1              0                        // Byte to send speed to left motor
+#define SPEED2              1                        // Byte to send speed to right motor
+#define ENCODERONE          2                        // Byte to read motor encoder 1
+#define ENCODERTWO          6                        // Byte to read motor encoder 2
+#define VOLTREAD            10                        // Byte to read battery volts
+#define RESETENCODERS       32
+#define LED 2
+
 #define RCCHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){printf("Failed status on line %d: %d. Aborting.\n",__LINE__,(int)temp_rc);vTaskDelete(NULL);}}
 #define RCSOFTCHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){printf("Failed status on line %d: %d. Continuing.\n",__LINE__,(int)temp_rc);}}
+int x = 0;
 
-//#include "esp_attr.h"
-//#include "driver/gpio.h"
-//#include "driver/timer.h"
+rcl_publisher_t encoder_publisher;
+rcl_subscription_t cmd_vel_subscriber;
 
-#include "hadabot_hw.h"
-//#include "rotsensor.h"
-//#include "motor.h"
+geometry_msgs__msg__Vector3 msg;
 
-#define FRAME_ID_SIZE 10
-#define LOG_INFO_MSG_SIZE 200
+long encoder(int encoder_dir){                                            // Function to read and display velue of encoder 2 as a long
+  Wire.beginTransmission(MD25ADDRESS);           
+  Wire.write(encoder_dir);
+  Wire.endTransmission();
+  
+  Wire.requestFrom(MD25ADDRESS, 4);                         // Request 4 bytes from MD25
+  while(Wire.available() < 4);                              // Wait for 4 bytes to become available
+  long poss2 = Wire.read();
+  poss2 <<= 8;
+  poss2 += Wire.read();                
+  poss2 <<= 8;
+  poss2 += Wire.read();                
+  poss2 <<= 8;
+  poss2  +=Wire.read();               
+                                  
+  delay(5);
+  return(poss2);
+}
 
-HadabotHW* pHadabotHW;
+void encodeReset(){                            // This function resets the encoder values to 0
+  Wire.beginTransmission(MD25ADDRESS);
+  Wire.write(CMD);
+  Wire.write(RESETENCODERS);                   // Putting the value 0x20 to reset encoders
+  Wire.endTransmission();
+	delay(50);
+}
 
-rcl_clock_t ros_clock;
-
-
-rcl_publisher_t log_info_publisher;
-std_msgs__msg__String log_info_msg;
-
-rcl_subscription_t subscriber_hadabot_cmd_vel;
-rcl_subscription_t subscriber_cmd_vel;
-geometry_msgs__msg__Twist cmd_vel_msg;
-
-rcl_subscription_t subscriber_hadabot_goal_pos;
-geometry_msgs__msg__Pose2D goal_pos_msg;
-
-rcl_publisher_t wheel_radps_left_publisher;
-rcl_publisher_t wheel_radps_right_publisher;
-
-sensor_msgs__msg__Temperature wheel_radps_left_msg;
-sensor_msgs__msg__Temperature wheel_radps_right_msg;
-
-hadabot_msgs__msg__Odom2D odom2d_msg;
-rcl_publisher_t odom_publisher;
-
-//std_msgs__msg__Float32 wheel_radps_left_msg;
-//std_msgs__msg__Float32 wheel_radps_right_msg;
-
-
-rcl_publisher_t distance_publisher;
-//std_msgs__msg__Float32 distance_msg;
-sensor_msgs__msg__Temperature distance_msg;
-
-
-void log_info_timer_callback(rcl_timer_t * timer, int64_t last_call_time)
+void encoder_callback(rcl_timer_t * timer, int64_t last_call_time)
 {
-	UNUSED(last_call_time);
-
+	RCLC_UNUSED(last_call_time);
 	if (timer != NULL) {
-		// Fill the message timestamp
-		/*
-		struct timespec ts;
-		clock_gettime(CLOCK_REALTIME, &ts);
-		sprintf(log_info_msg.data.data, "Hadabot heartbeat %ld", ts.tv_sec);
-		*/
+		msg.x = encoder(ENCODERONE);
+		msg.y = encoder(ENCODERTWO);
+		RCSOFTCHECK(rcl_publish(&encoder_publisher, &msg, NULL));
 
-		rcl_time_point_value_t base_time_point_value;
-		rcl_clock_get_now(&ros_clock, &base_time_point_value);
-		//double time_sec =  base_time_point_value / 1000000000.0;
+		//digitalWrite(LED,HIGH);
+ 		//delay(50);
+ 		//digitalWrite(LED,LOW);
+ 		//delay(50);
+		
 
-		long unsigned int time_sec =  (long unsigned int) (base_time_point_value / 1000000000.0);
-		long unsigned int time_nsec = (long unsigned int) (base_time_point_value - time_sec*1000000000);
-
-
-		sprintf(log_info_msg.data.data, "Hadabot heartbeat sec: %lu  nsec: %lu", time_sec, time_nsec);
-
-
-	 //fprintf(stdout, "Cur time ns %llu, msg time ns %llu, difference %lld / %ld\n",
-    //    curtime, msgtime, duration_ns, duration_ms);		
-
-		//sprintf(log_info_msg.data.data, "Hadabot heartbeat");
-		log_info_msg.data.size = strlen(log_info_msg.data.data);
-
-		rcl_publish(&log_info_publisher, (const void*)&log_info_msg, NULL);
-		printf(log_info_msg.data.data);
-		printf("\n");
+ 		x = 127;                                                // Put a value of 127 in x, this will dive motors forward at full speed
+		Wire.beginTransmission(MD25ADDRESS);                    
+    Wire.write(SPEED2);                                     // Drive motor 2 at speed value stored in x
+    Wire.write(x);                                           
+    Wire.endTransmission();
 	}
 }
 
-void goal_pos_callback(const void * msgin) {
-
-	const geometry_msgs__msg__Pose2D * msg = (const geometry_msgs__msg__Pose2D *)msgin;
-
-	Position goal_pos(msg->x, msg->y, msg->theta);
-	printf("Received goal position x: %f y: %f, theta: %f\n", goal_pos.x, goal_pos.y, goal_pos.theta);
-
-	pHadabotHW->getPosController()->setGoalPosition(goal_pos);
-}
-
-void cmd_vel_callback(const void * msgin) {
-
-	rcl_time_point_value_t base_time_point_value;
-	rcl_clock_get_now(&ros_clock, &base_time_point_value);
-
-	long unsigned int time_sec =  (long unsigned int) (base_time_point_value / 1000000000.0);
-	long unsigned int time_nsec = (long unsigned int) (base_time_point_value - time_sec*1000000000);
-
-	printf("Received cmd_vel at sec: %lu nsec: %lu \n", time_sec, time_nsec);
-
-	const geometry_msgs__msg__Twist * msg = (const geometry_msgs__msg__Twist *)msgin;
-	//printf("Received cmd_vel message");
-	if (msg != NULL) {
-		//printf("Data: %f\n", msg->data);
-		pHadabotHW->getMotionController()->updateMotion(msg->linear.x, msg->angular.z);
-	}
-}
-
-
-void sensor_data_publish_timer_callback(rcl_timer_t * timer, int64_t last_call_time) {
-	UNUSED(last_call_time);
-
-	rcl_time_point_value_t base_time_point_value;
-	rcl_clock_get_now(&ros_clock, &base_time_point_value);
-	
-	long unsigned int time_sec =  (long unsigned int) (base_time_point_value / 1000000000.0);
-	long unsigned int time_nsec = (long unsigned int) (base_time_point_value - time_sec*1000000000);
-
-	PosEstimator *pPosEstimator = pHadabotHW->getPosEstimator();
-	Position pos;
-	Twist twist;
-	pPosEstimator->getPosition(pos);
-	pPosEstimator->getTwist(twist);
-	//printf("x: %f   y:   %f    theta   %f\n", pos.x, pos.y, pos.theta);
-
-	odom2d_msg.x = pos.x;
-	odom2d_msg.y = pos.y;
-	odom2d_msg.theta = pos.theta;
-	odom2d_msg.v = twist.v;
-	odom2d_msg.w = twist.w;
-
-	//printf("twsit.v : %f\n", twist.v);
-
-			
-	odom2d_msg.stamp.sec = time_sec;
-	odom2d_msg.stamp.nanosec = time_nsec;
-
-	rcl_publish(&odom_publisher, (const void*)&odom2d_msg, NULL);	
-	
-
-}
-
-
-
-void init_messages() {
-	log_info_msg.data.data = (char * ) malloc(LOG_INFO_MSG_SIZE * sizeof(char));
-	log_info_msg.data.size = 0;
-	log_info_msg.data.capacity = LOG_INFO_MSG_SIZE;
-
-/*
-	wheel_radps_left_msg.header.frame_id.data = (char*)malloc(FRAME_ID_SIZE * sizeof(char));
-	wheel_radps_left_msg.header.frame_id.size=0;
-	wheel_radps_left_msg.header.frame_id.capacity=FRAME_ID_SIZE;
-	sprintf(wheel_radps_left_msg.header.frame_id.data, "FramL");
-	wheel_radps_left_msg.header.frame_id.size = strlen(wheel_radps_left_msg.header.frame_id.data);
-	
-	wheel_radps_right_msg.header.frame_id.data = (char*)malloc(FRAME_ID_SIZE * sizeof(char));
-	wheel_radps_right_msg.header.frame_id.size=0;
-	wheel_radps_right_msg.header.frame_id.capacity=FRAME_ID_SIZE;
-	sprintf(wheel_radps_right_msg.header.frame_id.data, "FramR");
-	wheel_radps_right_msg.header.frame_id.size = strlen(wheel_radps_right_msg.header.frame_id.data);	
-*/
-
-	distance_msg.header.frame_id.data = (char*)malloc(FRAME_ID_SIZE * sizeof(char));
-	distance_msg.header.frame_id.size=0;
-	distance_msg.header.frame_id.capacity=FRAME_ID_SIZE;	
-	sprintf(distance_msg.header.frame_id.data, "FramD");	
-	distance_msg.header.frame_id.size = strlen(distance_msg.header.frame_id.data);	
-
-/*
-	odom_msg.header.frame_id.data = (char*)malloc(FRAME_ID_SIZE * sizeof(char));
-	odom_msg.header.frame_id.size=0;
-	odom_msg.header.frame_id.capacity=FRAME_ID_SIZE;	
-	sprintf(odom_msg.header.frame_id.data, "FrameO");	
-	odom_msg.header.frame_id.size = strlen(odom_msg.header.frame_id.data);	
-
-	odom_msg.child_frame_id.data = (char*)malloc(FRAME_ID_SIZE * sizeof(char));
-	odom_msg.child_frame_id.size=0;
-	odom_msg.child_frame_id.capacity=FRAME_ID_SIZE;	
-	sprintf(odom_msg.child_frame_id.data, "FrameC");	
-	odom_msg.child_frame_id.size = strlen(odom_msg.child_frame_id.data);	
-*/	
-}
-
-
-extern "C"  void appMain(void * arg)
+void appMain(void * arg)
 {
-	init_messages();
+	Wire.begin();
+  //Serial.begin(9600);                                       // Begin serial for LCD03
+  delay(100);                                               // Wait for everything to power up
+  //byte softVer = getSoft();                                 // Gets the software version of MD25
+  //Serial.println(softVer, DEC);                             // Print software version to the screen
+	encodeReset();
+  pinMode(LED,OUTPUT);
 
-  	rcl_allocator_t allocator = rcl_get_default_allocator();
+	rcl_allocator_t allocator = rcl_get_default_allocator();
 	rclc_support_t support;
 
 	// create init_options
 	RCCHECK(rclc_support_init(&support, 0, NULL, &allocator));
 
-   
 	// create node
-	rcl_node_t node = rcl_get_zero_initialized_node();
-	RCCHECK(rclc_node_init_default(&node, "hadabot_esp32", "", &support));
+	rcl_node_t node;
+	RCCHECK(rclc_node_init_default(&node, "noah_firmware", "", &support));
 
- 	RCCHECK(rcl_ros_clock_init(&ros_clock, &allocator));
-
-
-	RCCHECK(rclc_publisher_init_default(&log_info_publisher, &node,
-		ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String), "hadabot/log/info"));
-
-
-	rcl_timer_t log_info_timer = rcl_get_zero_initialized_timer();
-	RCCHECK(rclc_timer_init_default(&log_info_timer, &support, RCL_MS_TO_NS(5000), log_info_timer_callback));
-
-	rcl_timer_t sensor_data_publish_timer = rcl_get_zero_initialized_timer();
-	RCCHECK(rclc_timer_init_default(&sensor_data_publish_timer, &support, RCL_MS_TO_NS(20), sensor_data_publish_timer_callback));
-
-	RCCHECK(rclc_publisher_init_default(&odom_publisher, &node,
-		ROSIDL_GET_MSG_TYPE_SUPPORT(hadabot_msgs, msg, Odom2D), "hadabot/odom2d"));
-
-/*	
-	RCCHECK(rclc_publisher_init_default(&wheel_radps_left_publisher, &node,
-		ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, Temperature), "hadabot/wheel_radps_left_timestamped"));
-
-
-	RCCHECK(rclc_publisher_init_default(&wheel_radps_right_publisher, &node,
-		ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, Temperature), "hadabot/wheel_radps_right_timestamped"));
-*/
-
-	RCCHECK(rclc_publisher_init_default(&distance_publisher, &node,
-		ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, Temperature), "hadabot/distance_forward_timestamped"));
-
-
+	// create publisher
+	RCCHECK(rclc_publisher_init_default(
+		&encoder_publisher,
+		&node,
+		ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Vector3),
+		"noah/encoder"));
+	
+	// create subscriber
 	RCCHECK(rclc_subscription_init_default(
-		&subscriber_cmd_vel,
+		&cmd_vel_subscriber,
 		&node,
 		ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Twist),
-		"/cmd_vel"));
-
-	RCCHECK(rclc_subscription_init_default(
-		&subscriber_hadabot_cmd_vel,
-		&node,
-		ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Twist),
-		"/hadabot/cmd_vel"));
-
-	RCCHECK(rclc_subscription_init_default(
-		&subscriber_hadabot_goal_pos,
-		&node,
-		ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Pose2D),
-		"/hadabot/goal_pose"));
-
-
+		"noah/cmd_vel"));
+	// 0.89ms vel maxima
+	// vel to motor -- x/0.007 + 128
+	// create timer,
+	rcl_timer_t timer;
+	const unsigned int timer_timeout = 50;
+	RCCHECK(rclc_timer_init_default(
+		&timer,
+		&support,
+		RCL_MS_TO_NS(timer_timeout),
+		encoder_callback));
 
 	// create executor
-	rclc_executor_t executor = rclc_executor_get_zero_initialized_executor();
-	RCCHECK(rclc_executor_init(&executor, &support.context, 5, &allocator));
+	rclc_executor_t executor;
+	RCCHECK(rclc_executor_init(&executor, &support.context, 1, &allocator));
+	RCCHECK(rclc_executor_add_timer(&executor, &timer));
 
-	unsigned int rcl_wait_timeout = 1;   // timeout for waiting for new data from subscribed topics
-	RCCHECK(rclc_executor_set_timeout(&executor, RCL_MS_TO_NS(rcl_wait_timeout)));
+	msg.x = 0.0;
+	msg.y = 0.0;
+	msg.z = 0.0;
 
-	RCCHECK(rclc_executor_add_timer(&executor, &sensor_data_publish_timer));
+	while(1){
+		rclc_executor_spin_some(&executor, RCL_MS_TO_NS(50));
+		usleep(10000);
+	}
 
-	RCCHECK(rclc_executor_add_subscription(&executor, &subscriber_hadabot_cmd_vel, &cmd_vel_msg, &cmd_vel_callback, ON_NEW_DATA));
+	// free resources
+	RCCHECK(rcl_publisher_fini(&encoder_publisher, &node))
+	RCCHECK(rcl_node_fini(&node))
 
-	RCCHECK(rclc_executor_add_subscription(&executor, &subscriber_cmd_vel, &cmd_vel_msg, &cmd_vel_callback, ON_NEW_DATA));
-
-		RCCHECK(rclc_executor_add_subscription(&executor, &subscriber_hadabot_goal_pos, &goal_pos_msg, &goal_pos_callback, ON_NEW_DATA));
-
-	RCCHECK(rclc_executor_add_timer(&executor, &log_info_timer));	
-
-	rclc_executor_spin(&executor);	
-
-	RCCHECK(rcl_publisher_fini(&log_info_publisher, &node));
-	
-	//RCCHECK(rcl_publisher_fini(&wheel_radps_left_publisher, &node));
-	//RCCHECK(rcl_publisher_fini(&wheel_radps_right_publisher, &node));
-	RCCHECK(rcl_publisher_fini(&odom_publisher, &node));
-	RCCHECK(rcl_publisher_fini(&distance_publisher, &node));
-	RCCHECK(rcl_subscription_fini(&subscriber_cmd_vel, &node));
-	RCCHECK(rcl_subscription_fini(&subscriber_hadabot_goal_pos, &node));
-
-	RCCHECK(rcl_ros_clock_fini(&ros_clock));
-
-	RCCHECK(rcl_node_fini(&node));
-	vTaskDelete(NULL);
+  vTaskDelete(NULL);
 }
 
-extern "C"  void microros_interface_init(HadabotHW* _pHadabotHW) {
-	pHadabotHW = _pHadabotHW;
-    // start microROS task
-    xTaskCreate(appMain, "uros_task", CONFIG_MICRO_ROS_APP_STACK, NULL, 5, NULL);	
+extern "C"  void microros_interface_init() {
+
+	// start microROS task
+  xTaskCreate(appMain, "uros_task", CONFIG_MICRO_ROS_APP_STACK, NULL, 5, NULL);	
 }
