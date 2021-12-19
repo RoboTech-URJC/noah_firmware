@@ -201,7 +201,7 @@ MicroROS IP/port, WiFi credentials and motor\sensor pins are needed to define.
 To configure hadabot microros firmware run command inside docker container
 
 ```bash
-./idf.py menuconfig
+idf.py menuconfig
 ```
 
 The textual menu will appear. 
@@ -260,15 +260,20 @@ after that you can use idf.py commands flash\monitor inside container adding TCP
 To build / flash / monitor the Hadabot Microros firmware run command inside docker container
 
 ```bash
-./idf.py build flash monitor 
+idf.py build flash monitor 
+```
+If you don't want to see the ESP32 log, you can suppress the *monitor* option.
+
+```bash
+idf.py build flash 
 ```
 
-When flash will starting to connect you may need to press BOOT button on ESP32 board until connection is established. 
+~~When flash will starting to connect you may need to press BOOT button on ESP32 board until connection is established. ~~
 
 For docker container based on WSL2 use command inside container (see Windows 10 prerequisites in the previous section)
 
 ```bash
-./idf.py build flash monitor -p rfc2217://192.168.1.64:3333
+idf.py build flash monitor -p rfc2217://192.168.1.64:3333
 ```
 use your host IP.
 
