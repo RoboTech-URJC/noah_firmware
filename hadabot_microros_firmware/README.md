@@ -231,30 +231,6 @@ and change IP address to your machine with Micro-ROS agent
 
 "-DRMW_UXRCE_DEFAULT_UDP_IP=192.168.1.64",
 
-
-## Preruquisites for Windows 10 docker containers
-
-If you use docker on Windows 10 (based on WSL2) (as I am) to be able to run flash and monitor commands 
-from docker container you need to do additional 
-
-Linux distros installed on WSL2 (or inside containers) does not see COM ports yet. 
-(Microsoft working on solving this now).
-
-
-To be able to flash\monitor from docker container you need to map Windows COM port (with ESP32 plugged in)
-to TCP port that can be used from docker container. 
-
-I use utility hub4com
-https://sourceforge.net/projects/com0com/
-
-you can run it in Windows with COM port and TCP port defined
-
-```bash
-com2tcp-rfc2217.bat COM3 3333
-```
-
-after that you can use idf.py commands flash\monitor inside container adding TCP port information.
-
 ## Build / flash / monitor  firmware
 
 To build / flash / monitor the Hadabot Microros firmware run command inside docker container
