@@ -30,6 +30,9 @@
 #define VOLTREAD            10                        // Byte to read battery volts
 #define RESETENCODERS       32
 #define LED 2
+#define OPERATION_MODE      15
+#define MAX_VEL_VALUE       127
+
 
 #define RCCHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){printf("Failed status on line %d: %d. Aborting.\n",__LINE__,(int)temp_rc);vTaskDelete(NULL);}}
 #define RCSOFTCHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){printf("Failed status on line %d: %d. Continuing.\n",__LINE__,(int)temp_rc);}}
@@ -66,9 +69,15 @@ void encodeReset(){                            // This function resets the encod
   Wire.write(RESETENCODERS);                   // Putting the value 0x20 to reset encoders
   Wire.endTransmission();
 	delay(50);
+  //Wire.beginTransmission(MD25ADDRESS);
+  //Wire.write(OPERATION_MODE);
+  //Wire.write(1);
+  //Wire.endTransmission();
+	//delay(50);
+
 }
 
-void encoder_callback(rcl_timer_t * timer, int64_t last_call_time)
+void encoderCallback(rcl_timer_t * timer, int64_t last_call_time)
 {
 	RCLC_UNUSED(last_call_time);
 	if (timer != NULL) {
@@ -82,68 +91,57 @@ void encoder_callback(rcl_timer_t * timer, int64_t last_call_time)
  		//delay(50);
 		
 
- 		x = 127;                                                // Put a value of 127 in x, this will dive motors forward at full speed
-		Wire.beginTransmission(MD25ADDRESS);                    
-    Wire.write(SPEED2);                                     // Drive motor 2 at speed value stored in x
-    Wire.write(x);                                           
-    Wire.endTransmission();
+ 	
 	}
 }
 
-/*
-void kobuki_set_speed_command(float translation, float rotation){
-    pthread_mutex_lock(&robot_lock);
-    robot.base_control_command[0] = KOBUKI_BASE_CONTROL_COMMAND;
-    robot.base_control_command[1] = KOBUKI_BASE_CONTROL_COMMAND_LEN;
-
-    int16_t * speed = (int16_t *) &robot.base_control_command[2];
-    int16_t * radius = (int16_t *) &robot.base_control_command[4];
-    
-    // kobuki_safety_contrains(&translation, &rotation);
-    
-    // convert to mm;
-    translation *= 1000;
-    float b2 = KOBUKI_WHEELBASE * 500.0;
-
-    if (fabs(translation) < 1){
-        //Pure rotation
-        *radius = 1;
-        *speed =  (int16_t) (rotation * b2);
-    } else if (fabs(rotation) < 1e-3 ) {
-        //Pure translation
-        *speed = (int16_t) translation;
-        *radius = 0;
-    }else {
-        //Translation and rotation
-        float r = translation/rotation;
-        *radius = (int16_t) r;
-        if (r > 1) {
-            *speed = (int16_t) (translation * (r + b2)/ r);
-        } else if (r < -1) {
-            *speed = (int16_t) (translation * (r - b2)/ r);
-        }
-    }
-
-    #if (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)
-        *speed = *((int16_t *)  kobuki_swap_endianness(speed, 16)));
-        *radius = *((int16_t *) kobuki_swap_endianness(radius, 16)));
-    #endif
-    pthread_mutex_unlock(&robot_lock);
-
-#ifdef KOBUKI_DEBUG
-    printf("Setting base control to : translation = %0.3f, rotation = %0.3f speed = %d radius = %d\n Hex: ",translation, rotation, *speed, *radius);
-    for (size_t i = 0; i < sizeof(robot.base_control_command); i++){ printf("0x%02X ", robot.base_control_command[i]);}
-    printf("\n");
-#endif
+void setSpeedCommand(int left_motor_value, int right_motor_value)
+{
+  Wire.beginTransmission(MD25ADDRESS);
+  Wire.write(SPEED1);  // Drive motor 1 (left) at speed value stored in rotation_left
+  Wire.write(left_motor_value);
+  Wire.endTransmission();
+  delay(1);
+  //Wire.beginTransmission(MD25ADDRESS);
+  //Wire.write(SPEED2);  // Drive motor 2 (right) at speed value stored in rotation_right
+  //Wire.write(right_motor_value);
+  //Wire.endTransmission();
 }
 
-*/
-
-void cmd_vel_callback(const void * msgin)
+void cmdVelCallback(const void * msgin)
 {
 	const geometry_msgs__msg__Twist * msg = (geometry_msgs__msg__Twist *) msgin;
-	printf("I have heard: \"%f\"\n", msg->linear.x);
-  // kobuki_set_speed_command -- https://github.com/pablogs9/kobuki_espidf_component/blob/d0694edbaab91a60d2bec6b438b9971065b1893c/src/kobuki.c
+  double linear_vel = 0.0;
+  double angular_vel = 0.0;
+  if (msg->linear.x == 0.0 && msg->angular.z != 0.0) {
+    // Pure rotation
+    if (msg->angular.z > 1.0) {
+      angular_vel = 1.0;
+    } else if (msg->angular.z < -1.0) {
+      angular_vel = -1.0;
+    } else {
+      angular_vel = msg->angular.z;
+    }
+    int rotation_right = (int) MAX_VEL_VALUE * angular_vel;
+    int rotation_left = -rotation_right;
+    setSpeedCommand(rotation_left, rotation_right);
+  } else if (msg->linear.x != 0.0 && msg->angular.z == 0.0) {
+    // Pure translation
+    if (msg->linear.x > 1.0) {
+      linear_vel = 1.0;
+    } else if (msg->linear.x < -1.0) {
+      linear_vel = -1.0;
+    } else {
+      linear_vel = msg->linear.x;
+    }
+    x = (int) MAX_VEL_VALUE * linear_vel;  // Put a value of 127 in x, this will dive motors forward at full speed
+	  setSpeedCommand(x, x);
+  } else if (msg->linear.x == 0.0 && msg->angular.z == 0.0) {
+    // Stop motors
+    setSpeedCommand(0, 0);
+  }
+  // Diagonal movements????
+
 }
 
 void appMain(void * arg)
@@ -188,7 +186,7 @@ void appMain(void * arg)
 		&timer,
 		&support,
 		RCL_MS_TO_NS(timer_timeout),
-		encoder_callback));
+		encoderCallback));
 
 	// create executor
 	rclc_executor_t executor = rclc_executor_get_zero_initialized_executor();
@@ -198,13 +196,10 @@ void appMain(void * arg)
     &executor,
     &cmd_vel_subscriber,
     &twist_msg, 
-    cmd_vel_callback,
+    cmdVelCallback,
     ON_NEW_DATA));
 
-	msg.x = 0.0;
-	msg.y = 0.0;
-	msg.z = 0.0;
-
+  // ToDo: change while true by rclcpp::ok()
 	while(1){
 		rclc_executor_spin_some(&executor, RCL_MS_TO_NS(50));
 		usleep(10000);
